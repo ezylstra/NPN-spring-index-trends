@@ -5,12 +5,12 @@ library(stringr)
 library(lubridate)
 library(tidyr)
 library(sf)
-# library(gamm4)
 library(sdmTMB)
 library(fmesher)
 library(ggplot2)
 library(rnaturalearth)
 library(RColorBrewer)
+library(lme4) # for fixef function
 
 # Load, format data -----------------------------------------------------------#
  
@@ -95,6 +95,7 @@ dat <- df %>%
 
 inner <- 500      
 cut_frac <- 0.5
+loc <- as.matrix(dat[, c("x", "y")])
 
 inla_mesh <- fm_mesh_2d_inla(
   loc      = loc,
@@ -135,12 +136,11 @@ fit1 <- sdmTMB(
   family = gaussian()
 )
 
-
 fit1_update <- run_extra_optimization(fit1)
-sanity(fit1_update)
+# sanity(fit1_update)
 # looks good
 
-fit1_update
+# fit1_update
 # Range = distance at which two locations are effectively independent (about 
   # 13% correlated). Here, 5500 km. Ideally, this value should be about 5-10x
   # the inner max.edge of mesh (500).
@@ -151,8 +151,8 @@ fit1_update
   # info on interpreting results
 
 # Can extract coefficients via tidy():
-tidy(fit1_update, conf.int = TRUE)
-tidy(fit1_update, effects = "ran_par", conf.int = TRUE)
+# tidy(fit1_update, conf.int = TRUE)
+# tidy(fit1_update, effects = "ran_par", conf.int = TRUE)
 
 # Map predictions -------------------------------------------------------------#
 
@@ -177,7 +177,7 @@ pred_grid <- data.frame(
   # level REs when making preds)
   station = factor(levels(dat$station)[1], levels = levels(dat$station))
 )
-nrow(pred_grid)
+# nrow(pred_grid)
 
 # Predict
 p <- predict(fit1_update, newdata = pred_grid, re_form_iid = NA)
@@ -207,7 +207,7 @@ lim <- max(abs(quantile(p$local_trend, c(0.02, 0.98))))
 # Plot (Note that here we're "squishing" the extremes which sets the color 
 # ramp limits at 2nd and 98th percentile and pins anything beyond that to 
 # the end colors. Would need to mention this clampling in a figure caption)
-ggplot() +
+map <- ggplot() +
   geom_tile(data = p, aes(x, y, fill = local_trend), width = 50, height = 50) +
   geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
   scale_fill_distiller(palette = "RdBu", limits = c(-lim, lim),
@@ -220,67 +220,7 @@ ggplot() +
         axis.text = element_blank(),
         axis.ticks = element_blank())
 
-### TO DO: Clip prediction grid to land areas...
-# Reducing the domain buffer doesn't work well since that creates a bunch of 
-# isolated prediction islands in Russia.
-
-# Assess local trend signficance ----------------------------------------------#
-
-# From Claude:
-# sdmTMB can simulate draws from the joint uncertainty of the fixed trend and 
-# the spatial trend field. From those draws you get a credible interval for the 
-# local trend at every grid cell and can flag cells where it excludes zero.
-
-# The local trend is the fixed slope plus the value of the spatial field at that 
-# location. A clean way to get draws of exactly that is to predict each cell at 
-# yrc = 0 and yrc = 1 in the same call, so both rows use the same parameter 
-# draws, and then subtract:
-
-n <- nrow(pred_grid)
-nd <- rbind(transform(pred_grid, yrc = 0),
-            transform(pred_grid, yrc = 1))
-
-set.seed(1)
-sims <- predict(fit1_update, newdata = nd, nsim = 500, re_form_iid = NA)
-
-tr <- sims[(n + 1):(2 * n), ] - sims[1:n, ]   # trend draws: cells x 500
-
-pred_grid$trend <- rowMeans(tr)
-pred_grid$lwr   <- apply(tr, 1, quantile, 0.025)
-pred_grid$upr   <- apply(tr, 1, quantile, 0.975)
-pred_grid$p_pos <- rowMeans(tr > 0)
-pred_grid$sig   <- pred_grid$lwr > 0 | pred_grid$upr < 0
-
-# Check that pred_grid$trend is very simliar to p$local_trend
-summary(pred_grid$trend - p$local_trend)
-# Confirming that differences are just simulation noise...
-point <- fixef(fit1)["yrc"] + p$zeta_s_yrc
-mc_se <- apply(tr, 1, sd) / sqrt(ncol(tr))
-z <- (pred_grid$trend - point) / mc_se
-summary(z)
-mean(abs(z) > 2)
-
-#### TODO: These are pointwise intervals, so we have the same multiple 
-# comparison issues that have come up before. Figure out if/how we want to deal
-# with that. 
-
-# In map, should see that uncertainty grows as you move away from stations.
-
-# Map just showing where trends are significantly different than zero
-ggplot() +
-   #geom_tile(data = p, aes(x, y, fill = local_trend), width = 50, height = 50) +
-  geom_tile(data = pred_grid, aes(x, y, fill = trend, alpha = sig),
-            width = 50, height = 50) +
-  geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
-  geom_contour(data = pred_grid, aes(x, y, z = as.numeric(sig)),
-               breaks = 0.5, color = "black", linewidth = 0.4) +
-  scale_alpha_manual(values = c("FALSE" = 0, "TRUE" = 1), guide = "none") +
-  scale_fill_distiller(palette = "RdBu", limits = c(-lim, lim),
-                       oob = scales::squish, direction = 1, 
-                       name = "Trend\n(per decade)") +
-  coord_sf(crs = laea_km,
-           xlim = range(p$x), ylim = range(p$y), expand = FALSE) +
-  theme(axis.title = element_blank(),
-        axis.text = element_blank(),
-        axis.ticks = element_blank())
+# Save objects
+ggsave("test-map.png", map, width = 6.5, height = 7, units = "in", dpi = 600)
+saveRDS(fit1_update, "test-model.rds")
 
