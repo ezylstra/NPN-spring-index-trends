@@ -2,24 +2,16 @@
 
 library(dplyr)
 library(stringr)
-library(lubridate)
 library(tidyr)
 library(sf)
 library(sdmTMB)
 library(fmesher)
 library(ggplot2)
 library(rnaturalearth)
-library(RColorBrewer)
-library(lme4)
-library(scales)
 
 # Load, format data -----------------------------------------------------------#
 
 dfload <- read.csv("SI-x_NH_1950_2024_25.csv", na.strings = c("", 999, "999"))
-# GHCN = 3-digit country code
-# Stat = (up to 7 digit) station number within each country  
-# Need combined 10-digit number to uniquely ID a station
-# 4 indices: leaf, bloom, last freeze, damage (= diff between leaf, last freeze)
 
 # Make all column names lowercase
 colnames(dfload) <- str_to_lower(colnames(dfload))
@@ -41,14 +33,14 @@ df <- dfload %>%
 
 # Subset data to North America ------------------------------------------------#
 
-ghcns <- df %>%
-  group_by(ghcn) %>%
-  summarize(nstations = n_distinct(station), 
-            minlat = min(lat),
-            maxlat = max(lat),
-            minlon = min(lon),
-            maxlon = max(lon)) %>%
-  data.frame()
+# ghcns <- df %>%
+#   group_by(ghcn) %>%
+#   summarize(nstations = n_distinct(station), 
+#             minlat = min(lat),
+#             maxlat = max(lat),
+#             minlon = min(lon),
+#             maxlon = max(lon)) %>%
+#   data.frame()
 # ghcns
 # Looks like US and Canada stations all have ghcn = 403 or 425
 
@@ -85,10 +77,9 @@ years <- 1991:2024
 # Create new years variables; make sure station is a factor
 dat <- dfna %>%
   filter(year %in% years) %>%
-  mutate(yr0 = year - min(year)) %>%
   mutate(yrc = (year - mean(year))/10) %>%  # centered, scaled to decade
   mutate(station = factor(station)) %>%
-  select(ghcn, station, lat, lon, x, y, year, yr0, yrc, contains(index)) %>%
+  select(ghcn, station, lat, lon, x, y, year, yrc, contains(index)) %>%
   arrange(station, year)
 
 yr_mean <- mean(dat$year)    
@@ -101,17 +92,17 @@ yr_mean <- mean(dat$year)
 
 # Look at a range of options.
 loc <- as.matrix(dat[, c("x", "y")])
-settings <- expand.grid(inner = c(300, 400, 500, 700), cut_frac = c(0.3, 0.5))
-settings$n <- apply(settings, 1, function(s) {
-  m <- fm_mesh_2d_inla(
-    loc      = loc,
-    max.edge = c(s["inner"], s["inner"] * 4),
-    offset   = c(s["inner"], s["inner"] * 3),
-    cutoff   = s["inner"] * s["cut_frac"]
-  )
-  m$n
-})
-settings
+# settings <- expand.grid(inner = c(300, 400, 500, 700), cut_frac = c(0.3, 0.5))
+# settings$n <- apply(settings, 1, function(s) {
+#   m <- fm_mesh_2d_inla(
+#     loc      = loc,
+#     max.edge = c(s["inner"], s["inner"] * 4),
+#     offset   = c(s["inner"], s["inner"] * 3),
+#     cutoff   = s["inner"] * s["cut_frac"]
+#   )
+#   m$n
+# })
+# settings
 
 inner <- 300   
 cut_frac <- 0.5
@@ -143,9 +134,8 @@ fit1 <- sdmTMB(
   family = gaussian()
 )
 sanity(fit1)
-
-# Save to file
-saveRDS(fit1, "leaf-na-1991-2024-model.rds")
+# tidy(fit1, effects = "fixed", conf.int = TRUE) 
+# tidy(fit1, effects = "ran_par", conf.int = TRUE) 
 
 # Create a prediction grid ----------------------------------------------------#
 
@@ -153,7 +143,7 @@ saveRDS(fit1, "leaf-na-1991-2024-model.rds")
 sites <- st_as_sf(dat[!duplicated(dat$station), c("x", "y")], 
                   coords = c("x", "y"))
 
-# Domain = everything within 200 km of a site
+# Domain = everything within 300 km of a site
 domain <- st_union(st_buffer(sites, 300))
 
 # 50 km grid of cell centers, kept only inside the domain (can adjust this)
@@ -190,101 +180,86 @@ pred_grid$land <- lengths(st_intersects(pg_sf, land)) > 0
 
 lg <- pred_grid[pred_grid$land, c("x", "y", "station")]
 n_land <- nrow(lg)
+n_land # 5839 cells
 
 # check: 
 # ggplot() +
 #   geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
 #   geom_point(data = lg, aes(x = x, y = y))
 
-# 3. Local trend draws (land cells) -------------------------------------------#
-# Predict each cell at yrc = 0 and yrc = 1 in the same year, using the same
-# draws, and take the difference. The yearly field and the intercept field
-# cancel, so each draw is exactly b + zeta(s).
-# Use more draws than 500. The lfsr/FDR step depends on the tails.
+# Settings ---------------------------------------------------------------------#
 
-nsim <- 1000 # 2000 is probably better ########
+nsim <- 1000  # consider 2000 for lfsr tails
+mem  <- n_land * length(years) * nsim * 8 / 1e9
+coarsen <- mem > 6  # set relative to your HPC memory request
+
+if (coarsen) {
+  keep <- (round((lg$x - min(lg$x)) / 50) %% 2 == 0) &
+    (round((lg$y - min(lg$y)) / 50) %% 2 == 0)
+  lg_c <- lg[keep, c("x", "y", "station")]
+} else {
+  lg_c <- lg[, c("x", "y", "station")]
+}
+n_c <- nrow(lg_c)
+
+# Build one newdata: [trend rows at yrc = 0] [trend rows at yrc = 1] [cell x year]
 nd <- rbind(transform(lg, yrc = 0, year = years[1]),
             transform(lg, yrc = 1, year = years[1]))
-set.seed(1)
-sims <- predict(fit1, newdata = nd, nsim = nsim, re_form_iid = NA)
-tr <- sims[(n_land + 1):(2 * n_land), ] - sims[1:n_land, ]   # n_land x nsim
-rm(sims)
-
-# lg$trend <- rowMeans(tr)
-# lg$sd    <- apply(tr, 1, sd)
-# lg$lwr   <- apply(tr, 1, quantile, 0.025)
-# lg$upr   <- apply(tr, 1, quantile, 0.975)
-# lg$p_pos <- rowMeans(tr > 0)
-
-# Save tr
-saveRDS(tr, "output/si-leaf-1991-2024-northamerica-tr.rds")
-
-# 3a. Bayesian FDR on the sign (local false sign rate) ------------------------#
-# lfsr = posterior probability that the sign of the trend is wrong.
-# Rank cells by lfsr, then take the largest set whose average lfsr is <= q.
-# The expected proportion of flagged area with the wrong sign is then <= q.
-# All cells have equal area (equal-area projection), so this is an area-based
-# rate.
-# q <- 0.05
-# lg$lfsr <- pmin(lg$p_pos, 1 - lg$p_pos)
-# o  <- order(lg$lfsr)
-# cm <- cumsum(lg$lfsr[o]) / seq_along(o)
-# k  <- max(c(0, which(cm <= q)))
-# lg$sig_fdr <- FALSE
-# lg$sig_fdr[o[seq_len(k)]] <- TRUE
-# mean(lg$sig_fdr)                 # proportion of land area flagged
-# mean(lg$lfsr[lg$sig_fdr])        # realized average lfsr of the flagged set
-
-# 4. Hemisphere-wide trend ----------------------------------------------------#
-# Area-weighted mean of the local trend over land cells, computed in each draw.
-# This is not the same as fixef(yrc). The SVC field is centered over the whole
-# mesh, not over land, and the station network is dominated by the US.
-# hemi_trend <- colMeans(tr)
-# c(est = mean(hemi_trend), quantile(hemi_trend, c(0.025, 0.975)))
-# Units: index units (days) per decade
-
-# 5. Hemisphere-wide annual values -------------------------------------------#
-# Predict every land cell in every year, then take the area-weighted mean.
-# area = 1/n_land turns get_index()'s area-weighted sum into a mean. The SEs
-# come from TMB's generalized delta method. get_index() builds its CIs from
-# log_est and se on the log scale. That is fine for positive day-of-year
-# values. For symmetric intervals, use est +/- 1.96 * se * est (delta method).
-# If get_index() is slow, coarsen the grid (e.g., 100 km). Equal-area cells mean
-# coarsening does not bias the mean.
-
-grid_yrs <- tidyr::expand_grid(lg[, c("x", "y", "station")], year = years) %>%
+grid_yrs_c <- as.data.frame(tidyr::expand_grid(lg_c, year = years)) %>%
   mutate(yrc = (year - yr_mean) / 10)
-p_idx <- predict(fit1, newdata = grid_yrs, return_tmb_object = TRUE,
-                 re_form_iid = NA)
-hemi <- get_index(p_idx, area = rep(1 / n_land, nrow(grid_yrs)),
-                  bias_correct = FALSE)
+newdat <- rbind(nd, grid_yrs_c[, names(nd)])
 
-# Save hemi
-saveRDS(hemi, "output/si-leaf-1991-2024-northamerica-hemi.rds")
+i0 <- seq_len(n_land)
+i1 <- n_land + seq_len(n_land)
+ig <- 2 * n_land + seq_len(nrow(grid_yrs_c))
 
-# Create a map with local trends ----------------------------------------------#
-# Not worrying about estimating signficance for the time being
+# One joint simulation call ---------------------------------------------------#
+set.seed(1234)
+sims <- predict(fit1, newdata = newdat, nsim = nsim, re_form_iid = NA)
 
-# One row per land cell. year must be one of the fitted years (fit1 has
-# time = "year"), but which year you pick doesn't affect zeta_s_yrc.
-lg_pred <- transform(lg[, c("x", "y", "station")], year = years[1], yrc = 0)
+tr <- sims[i1, ] - sims[i0, ]  # n_land x nsim
+ann_draws <- rowsum(sims[ig, , drop = FALSE], grid_yrs_c$year) / n_c  # years x nsim
+rm(sims); gc()
 
-p1 <- predict(fit1, newdata = lg_pred, re_form_iid = NA)
-p1$local_trend <- fixef(fit1)["yrc"] + p1$zeta_s_yrc   # change per decade
+# Point-estimate local trend (needs the model, so do it here) -----------------#
+p1 <- predict(fit1, newdata = transform(lg, year = years[1], yrc = 0),
+              re_form_iid = NA)
+lg$trend_pt <- fixef(fit1)["yrc"] + p1$zeta_s_yrc
 
-lim1 <- max(abs(quantile(p1$local_trend, c(0.02, 0.98))))
+# Hemisphere-wide summaries ---------------------------------------------------#
+underlying_trend <- colMeans(tr)  # per draw, days/decade
 
-trendmap <- ggplot() +
-  geom_tile(data = p1, aes(x, y, fill = local_trend), width = 50, height = 50) +
-  geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
-  scale_fill_distiller(palette = "RdBu", limits = c(-lim3, lim3),
-                       oob = scales::squish, direction = 1,
-                       name = "Trend\n(per decade)") +
-  coord_sf(crs = laea_na, xlim = range(p1$x), ylim = range(p1$y),
-           expand = FALSE) +
-  theme(axis.title = element_blank(), axis.text = element_blank(),
-        axis.ticks = element_blank())
+ann_sum <- data.frame(
+  year = as.numeric(rownames(ann_draws)),
+  est  = rowMeans(ann_draws),
+  lwr  = apply(ann_draws, 1, quantile, 0.025),
+  upr  = apply(ann_draws, 1, quantile, 0.975)
+)
+xc <- (ann_sum$year - yr_mean) / 10
+w  <- (xc - mean(xc)) / sum((xc - mean(xc))^2)
+realized_trend <- as.vector(crossprod(w, ann_draws))  # per draw, days/decade
 
-# Save to file
-ggsave("output/si-leaf-1991-2024-northamerica-trends.png",
-       trendmap, width = 6.5, height = 6.5, units = "in", dpi = 600)
+# Station info for maps and methods --------------------------------------------#
+stations <- dat %>% distinct(station, lat, lon, x, y)
+n_by_year <- dat %>% filter(!is.na(leaf)) %>% count(year, name = "n_stations")
+
+# Save -------------------------------------------------------------------------#
+saveRDS(fit1, "output/si-leaf-1991-2024-northamerica-fit.rds")
+
+saveRDS(list(lg = lg, # cell coords + trend_pt; rows match tr
+             tr = tr,
+             ann_draws = ann_draws,
+             ann_sum = ann_sum,
+             underlying_trend = underlying_trend,
+             realized_trend = realized_trend,
+             stations = stations,
+             n_by_year = n_by_year,
+             fit_sanity = fit_sanity,
+             fit_fixed = fit_fixed,
+             fit_ranpar = fit_ranpar,
+             years = years, yr_mean = yr_mean, laea_na = laea_na,
+             n_land = n_land, n_cells_annual = n_c,
+             cellsize_km_annual = ifelse(coarsen, 100, 50),
+             nsim = nsim, seed = 1234,
+             session = sessionInfo()),
+        "output/si-leaf-1991-2024-northamerica-results.rds")

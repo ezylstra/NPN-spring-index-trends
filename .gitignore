@@ -2,3 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
+
+/leaf-1991-2024-northamerica/**
+!/leaf-1991-2024-northamerica/*.R
+
+
