@@ -13,8 +13,8 @@ library(RColorBrewer)
 # Set folder
 folder <- "leaf-1991-2024-northamerica/"
 
-# Read in sdmTMB model - necessary?
-# fit1 <- readRDS(paste0(folder, "si-leaf-1991-2024-northamerica-fit.rds"))
+# Read in sdmTMB model (necessary?)
+fit1 <- readRDS(paste0(folder, "si-leaf-1991-2024-northamerica-fit.rds"))
 
 # Read in saved objects (had been saved as a list)
 results <- readRDS("leaf-1991-2024-northamerica/si-leaf-1991-2024-northamerica-results.rds")
@@ -63,7 +63,7 @@ head(lg) # rows match tr
   # or from a predict() call: fixef(fit1)["yrc"] + preds$zeta_s_yrc
   # This is the model's point estimate with no simulation noise
 
-dim(tr) #rows match lg
+dim(tr) # rows match lg
 # For each simulated draw, compute b + zeta(s). Results the same as predicting
 # each cell at yrc = 0 and yrc = 1 in the same year and taking the difference. 
 # The yearly field and the intercept field cancel, so each draw is exactly 
@@ -102,18 +102,19 @@ trendmap <- ggplot() +
         axis.text = element_blank(),
         axis.ticks = element_blank(),
         panel.grid = element_blank(),
-        panel.background = element_rect(fill = "white"))
+        panel.background = element_rect(fill = "white"),
+        legend.position = "bottom")
 trendmap
 
 # Assess "significance": Bayesian FDR on the trend sign
   # p_pos is the proportion of draws > 0.
   # lfsr (local false sign rate) is the proportion of draws where the the sign 
-  # of the trend is wrong and is min(p_pos, 1 − p_pos). [A cell with 
-  # p_pos = 0.97 has lfsr = 0.03]
+    # of the trend is wrong 9if you declare the more likely sign for that cell) 
+    # and is min(p_pos, 1 − p_pos). [A cell with p_pos = 0.97 has lfsr = 0.03]
   # Rank the cells by lfsr from most to least certain, and keep adding cells 
-  # while the average lfsr of the flagged set stays ≤ 0.05.
+    # while the average lfsr of the flagged set stays ≤ 0.05.
   # All cells have equal area (equal-area projection), so this is an area-based
-  # rate.
+    # rate.
 
 q <- 0.05
 lg$lfsr <- pmin(lg$p_pos, 1 - lg$p_pos)
@@ -124,6 +125,18 @@ lg$sig_fdr <- FALSE
 lg$sig_fdr[o[seq_len(k)]] <- TRUE
 mean(lg$sig_fdr)                 # proportion of land area flagged
 mean(lg$lfsr[lg$sig_fdr])        # realized average lfsr of the flagged set
+
+lg %>%
+  mutate(pos_trend = if_else(trend_sim > 0, TRUE, FALSE)) %>%
+  group_by(pos_trend, sig_fdr) %>%
+  summarize(trend_min = min(trend_sim),
+            trend_mn = mean(trend_sim),
+            trend_max = max(trend_sim),
+            lfsr_min = min(p_pos),
+            lfsr_mn = mean(p_pos),
+            lfsr_max = max(p_pos),
+            .groups = "drop") %>%
+  data.frame()
 
 # Map: FDR-flagged cells
 trend_fdr <- ggplot() +
@@ -141,7 +154,8 @@ trend_fdr <- ggplot() +
         axis.text = element_blank(),
         axis.ticks = element_blank(),        
         panel.grid = element_blank(),
-        panel.background = element_rect(fill = "white"))
+        panel.background = element_rect(fill = "white"),
+        legend.position = "bottom")
 trend_fdr
 
 # Assess "significance": Simultaneous 95% band (stricter; all cells jointly) --#
@@ -156,11 +170,11 @@ mean(lg$sig_simul)
 
 # Comparing methods:
   # They control different error rates, much like Benjamini–Hochberg versus 
-  # Bonferroni:
+    # Bonferroni.
   # Simultaneous band controls the chance of making any wrong call anywhere 
-  # on the map at about 5%. It’s very strict and flags fewer cells.
+    # on the map at about 5%. It’s very strict and flags fewer cells.
   # FDR allows some wrong calls but limits them to about 5% of the flagged 
-  # area. It’s less strict and flags more cells.
+    # area. It’s less strict and flags more cells.
 
 # Hemisphere-wide annual values and trend -------------------------------------#
 
@@ -223,6 +237,15 @@ hemiplot_ci <- ggplot(ann_sum, aes(x = year)) +
   geom_point(aes(y = est)) +
   labs(y = "Mean leaf index (DOY)", x = NULL)
 hemiplot_ci
+
+# Save output to file:
+ggsave(paste0(folder, "trendmap-all.png"), trendmap, 
+       width = 6.5, height = 6.5, units = "in", dpi = 600)
+ggsave(paste0(folder, "trendmap-fdr.png"), trend_fdr, 
+       width = 6.5, height = 6.5, units = "in", dpi = 600)
+ggsave(paste0(folder, "hemi-trends.png"), hemiplot_ci, 
+       width = 6.5, height = 4, units = "in", dpi = 600)
+
 
 # For reference, how the sweep function works ---------------------------------#
 # m <- matrix(c(-1, 0, 1,     # draw 1: slope 1
