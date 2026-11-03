@@ -109,7 +109,7 @@ trendmap
 # Assess "significance": Bayesian FDR on the trend sign
   # p_pos is the proportion of draws > 0.
   # lfsr (local false sign rate) is the proportion of draws where the the sign 
-    # of the trend is wrong 9if you declare the more likely sign for that cell) 
+    # of the trend is wrong if you declare the more likely sign for that cell) 
     # and is min(p_pos, 1 − p_pos). [A cell with p_pos = 0.97 has lfsr = 0.03]
   # Rank the cells by lfsr from most to least certain, and keep adding cells 
     # while the average lfsr of the flagged set stays ≤ 0.05.
