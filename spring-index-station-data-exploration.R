@@ -63,6 +63,23 @@ all.equal(stations$nyrs, stations$n_bloom)
 # There's a freeze damage value for most years & stations (a few stations have
 # no freeze values)
 
+# Summarize data by year ------------------------------------------------------#
+
+years <- df %>%
+  group_by(year) %>%
+  summarize(n_leaf = n_distinct(station[!is.na(leaf)]),
+            n_bloom = n_distinct(station[!is.na(bloom)]),
+            n_frz = n_distinct(station[!is.na(frz)]),
+            n_damage = n_distinct(station[!is.na(damage)])) %>%
+  mutate(prop_leaf = round(n_leaf/4080, 2),
+         prop_bloom = round(n_bloom/4080, 2),
+         prop_frz = round(n_frz/4080, 2),
+         prop_damage = round(n_damage/4080, 2)) %>%
+  data.frame()
+years
+# 50% of stations reported data for each index in each year from 1951 on.
+# <50% in 1950
+
 # Project site coordinates ----------------------------------------------------#
 
 # Want site coords to be projected (not raw lon/lat) because sites span a wide
