@@ -6,4 +6,5 @@
 /leaf-1991-2024-northamerica/**
 !/leaf-1991-2024-northamerica/*.R
 
-
+/bloom-1951-2024-northhemis/si-bloom-1951-2024-northhemis-fit.rds
+/bloom-1951-2024-northhemis/si-bloom-1951-2024-northhemis-results.rds

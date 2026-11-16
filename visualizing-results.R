@@ -1,254 +1,302 @@
+# SI-x indices, Northern Hemisphere 1951-2024: VISUALIZE RESULTS
+#
+# Reads the results list saved by si-3-run.R (on the HPC) and
+# makes maps of local trends and plots of hemisphere-wide annual values and
+# realized trends, for the full period and for any sub-periods saved in
+# `periods` (default: full = 1951-2024, recent = 1991-2024).
+#
+# Two kinds of trend appear below:
+#   UNDERLYING local trend (tr, lg$trend_pt): the model's straight-line trend
+#     at each location, b + zeta(s). The model fits ONE line per location for
+#     1951-2024, so this map is the same for any sub-period.
+#   REALIZED trend (tr_real, realized_by_period): the OLS slope through the
+#     modeled annual values over a period, INCLUDING each year's anomaly
+#     field. This is the trend that actually happened over that period
+#     according to the model, and it can differ between periods.
+#
+# Note: the yearly anomaly fields are estimated with shrinkage toward 0
+# (more so where stations are sparse), so realized local trends for short
+# periods are pulled toward the long-term trend. A model fitted only to
+# 1991-2024 lets that period's trend vary freely; the two approaches answer
+# slightly different questions.
+
 library(dplyr)
-library(stringr)
 library(tidyr)
 library(sf)
-library(sdmTMB)
-library(fmesher)
 library(rnaturalearth)
 library(ggplot2)
-library(RColorBrewer)
+
+# Settings --------------------------------------------------------------------#
+
+index_name <- "bloom"   # leaf, bloom, frz or damage
+run_name   <- paste0("si-", index_name, "-1951-2024-northhemis")
+folder     <- paste0(index_name, "-1951-2024-northhemis/")   # local folder
+region     <- "Northern Hemisphere"
+q          <- 0.05   # error rate for significance (sign) calls
 
 # Read in results -------------------------------------------------------------#
 
-# Set folder
-folder <- "leaf-1991-2024-northamerica/"
-
-# Read in sdmTMB model (necessary?)
-fit1 <- readRDS(paste0(folder, "si-leaf-1991-2024-northamerica-fit.rds"))
-
-# Read in saved objects (had been saved as a list)
-results <- readRDS("leaf-1991-2024-northamerica/si-leaf-1991-2024-northamerica-results.rds")
+# The fit itself is not needed here (all products are in the results file)
+results <- readRDS(paste0(folder, run_name, "-results.rds"))
 list2env(results, envir = .GlobalEnv)
 rm(results)
 
-# Look at non-output objects --------------------------------------------------#
+has_real <- exists("tr_real")   # FALSE for results from the older run script
+if (!has_real) {
+  message("Results have no realized local trends (tr_real); re-run the ",
+          "updated run script on the HPC to get the period maps. ",
+          "Hemisphere-wide period trends are computed from ann_draws below.")
+  periods <- list(full = years, recent = 1991:2024)
+}
+period_lab <- sapply(periods, function(p) paste0(min(p), "-", max(p)))
 
-# Session info from model run
-session
+# Run information -------------------------------------------------------------#
 
-# Information about data
-years # years included in data
-yr_mean # mean year in dataset (used for centering year variable in model)
-head(stations) # station IDs, with lat/lon and x/y in projected coords
-n_by_year # number of stations with data each year
+session      # session info from the HPC run
+years        # years in the data
+yr_mean      # mean year (centering for yrc)
+n_by_year    # stations with data each year
+head(stations)
 
-# Modeling choices
-laea_na # projection used
-n_vertices # Number of vertices in mesh
+laea_km      # projection
+n_vertices   # mesh vertices
+cellsize_km  # prediction cell size (km)
+n_land       # land prediction cells
+nsim; batch; seed   # simulation settings
 
-# Information about prediction grid
-cellsize_km # Size of cell in prediction grid, in km
-n_land # Number of cells in prediction grid (land only)
-
-# Choices made when simulating values (local, hemisphere-wide estimates)
-nsim  # Number of simulated values
-batch # Number of simulated values per batch (done to reduce memory reqs)
-seed # Seed used when simulating values
-
-# Look at sanity check from model
 fit_sanity
-all(unlist(fit_sanity)) # TRUE if all individual checks were TRUE
+all(unlist(fit_sanity))   # TRUE if every check passed
 
-# Model output ----------------------------------------------------------------#
-
-# Estimates from model
 fit_fixed
 fit_ranpar
 
-# Local trends ----------------------------------------------------------------#
+# Helpers ---------------------------------------------------------------------#
 
-head(lg) # rows match tr
-# prediction cell coords + estimate of local trend (change per decade; trend_pt)
-# trend_pt = par_hat[ib[2]] + as.vector(A %*% par_hat[iz])
-  # or from a predict() call: fixef(fit1)["yrc"] + preds$zeta_s_yrc
-  # This is the model's point estimate with no simulation noise
+# Per-cell summaries of a cells x draws matrix of trend draws
+#   lfsr: local false sign rate = share of draws with the less likely sign
+#   sig_cell: cell's own lfsr <= q (at least 1 - q of draws agree on sign)
+#   sig_simul: simultaneous band excludes 0 (all cells jointly, ~95%)
+summarize_trend_draws <- function(m, q = 0.05) {
+  est   <- rowMeans(m)
+  sd    <- apply(m, 1, sd)
+  p_pos <- rowMeans(m > 0)
+  lfsr  <- pmin(p_pos, 1 - p_pos)
+  zmax  <- apply(abs((m - est) / sd), 2, max)
+  c95   <- unname(quantile(zmax, 1 - q))
+  data.frame(
+    est = est, sd = sd,
+    lwr = apply(m, 1, quantile, q / 2),
+    upr = apply(m, 1, quantile, 1 - q / 2),
+    p_pos = p_pos, lfsr = lfsr,
+    sig_cell  = lfsr <= q,
+    sig_simul = (est - c95 * sd > 0) | (est + c95 * sd < 0),
+    c95 = c95
+  )
+}
 
-dim(tr) # rows match lg
-# For each simulated draw, compute b + zeta(s). Results the same as predicting
-# each cell at yrc = 0 and yrc = 1 in the same year and taking the difference. 
-# The yearly field and the intercept field cancel, so each draw is exactly 
-# b + zeta(s).
+# Bayesian FDR (average lfsr of flagged set <= q). Reported for reference
+# only: when most cells have lfsr ~ 0, it can flag every cell, including
+# cells whose own sign is close to a coin flip.
+fdr_flag <- function(lfsr, q = 0.05) {
+  o  <- order(lfsr)
+  cm <- cumsum(lfsr[o]) / seq_along(o)
+  k  <- max(c(0, which(cm <= q)))
+  flag <- rep(FALSE, length(lfsr))
+  flag[o[seq_len(k)]] <- TRUE
+  flag
+}
 
-# Summarize simulated trend values
-lg$trend_sim <- rowMeans(tr)
-lg$sd    <- apply(tr, 1, sd)
-lg$lwr   <- apply(tr, 1, quantile, 0.025)
-lg$upr   <- apply(tr, 1, quantile, 0.975)
-lg$p_pos <- rowMeans(tr > 0)
+# Significance summary table for one set of cell summaries
+sig_table <- function(s) {
+  s %>%
+    mutate(direction = if_else(est > 0, "later", "earlier")) %>%
+    group_by(direction, sig_cell) %>%
+    summarize(n_cells   = n(),
+              area_prop = n() / nrow(s),
+              trend_min = min(est), trend_mean = mean(est),
+              trend_max = max(est),
+              lfsr_min  = min(lfsr), lfsr_mean = mean(lfsr),
+              lfsr_max  = max(lfsr),
+              .groups = "drop") %>%
+    data.frame()
+}
 
-# Check that trend point estimate is similar to mean of simulated values:
-cor(lg$trend_pt, lg$trend_sim)
-
-# Create a map with local trends
-lim1 <- max(abs(quantile(lg$trend_pt, c(0.02, 0.98))))
-
+# Base map layers
 world <- ne_countries(scale = "medium", returnclass = "sf")
 sf_use_s2(FALSE)
-north <- st_crop(world, xmin = -180, xmax = -50, ymin = 20, ymax = 75)
-north <- st_transform(north, laea_na)
+north <- st_crop(world, xmin = -180, xmax = 180, ymin = 20, ymax = 90)
+north <- st_transform(north, laea_km)
 land  <- st_union(st_make_valid(north))
 sf_use_s2(TRUE)
 
-trendmap <- ggplot() +
-  geom_sf(data = land, fill = "gray", color = "grey30", linewidth = 0.25) +
-  geom_tile(data = lg, aes(x, y, fill = trend_pt), width = 50, height = 50) +
-  geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
-  scale_fill_distiller(palette = "RdBu", limits = c(-lim1, lim1),
-                       oob = scales::squish, direction = 1,
-                       name = "Trend\n(per decade)") +
-  coord_sf(crs = laea_na, xlim = range(lg$x), ylim = range(lg$y),
-           expand = FALSE) +
-  theme(axis.title = element_blank(), 
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),
-        panel.grid = element_blank(),
-        panel.background = element_rect(fill = "white"),
-        legend.position = "bottom")
-trendmap
+# Map of a trend surface; optional `sig` fades non-significant cells
+trend_map <- function(cells, fill, sig = NULL, lim = NULL, title = NULL) {
+  cells$fill <- fill
+  if (is.null(lim)) lim <- max(abs(quantile(fill, c(0.02, 0.98))))
+  cells$sig <- if (is.null(sig)) TRUE else sig
+  ggplot() +
+    geom_sf(data = land, fill = "gray", color = "grey30", linewidth = 0.25) +
+    geom_tile(data = cells, aes(x, y, fill = fill, alpha = sig),
+              width = cellsize_km, height = cellsize_km) +
+    geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
+    scale_alpha_manual(values = c("FALSE" = 0.15, "TRUE" = 1), guide = "none") +
+    scale_fill_distiller(palette = "RdBu", limits = c(-lim, lim),
+                         oob = scales::squish, direction = 1,
+                         name = "Trend\n(days/decade)") +
+    coord_sf(crs = laea_km, xlim = range(cells$x), ylim = range(cells$y),
+             expand = FALSE) +
+    labs(title = title) +
+    theme(axis.title = element_blank(),
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(),
+          panel.background = element_rect(fill = "white"),
+          legend.position = "bottom")
+}
 
-# Assess "significance": Bayesian FDR on the trend sign
-  # p_pos is the proportion of draws > 0.
-  # lfsr (local false sign rate) is the proportion of draws where the the sign 
-    # of the trend is wrong if you declare the more likely sign for that cell) 
-    # and is min(p_pos, 1 − p_pos). [A cell with p_pos = 0.97 has lfsr = 0.03]
-  # Rank the cells by lfsr from most to least certain, and keep adding cells 
-    # while the average lfsr of the flagged set stays ≤ 0.05.
-  # All cells have equal area (equal-area projection), so this is an area-based
-    # rate.
+# Underlying local trends (whole model, 1951-2024) ----------------------------#
+# Each draw is b + zeta(s); the intercept and yearly fields cancel in a
+# per-decade difference. Same map for any sub-period.
 
-q <- 0.05
-lg$lfsr <- pmin(lg$p_pos, 1 - lg$p_pos)
-o  <- order(lg$lfsr)
-cm <- cumsum(lg$lfsr[o]) / seq_along(o)
-k  <- max(c(0, which(cm <= q)))
-lg$sig_fdr <- FALSE
-lg$sig_fdr[o[seq_len(k)]] <- TRUE
-mean(lg$sig_fdr)                 # proportion of land area flagged
-mean(lg$lfsr[lg$sig_fdr])        # realized average lfsr of the flagged set
+und <- summarize_trend_draws(tr, q)
+lg  <- bind_cols(lg[, c("x", "y", "trend_pt")], und)
 
-lg %>%
-  mutate(pos_trend = if_else(trend_sim > 0, TRUE, FALSE)) %>%
-  group_by(pos_trend, sig_fdr) %>%
-  summarize(trend_min = min(trend_sim),
-            trend_mn = mean(trend_sim),
-            trend_max = max(trend_sim),
-            lfsr_min = min(p_pos),
-            lfsr_mn = mean(p_pos),
-            lfsr_max = max(p_pos),
-            .groups = "drop") %>%
-  data.frame()
+cor(lg$trend_pt, lg$est)      # point estimate vs mean of draws (should be ~1)
 
-# Map: FDR-flagged cells
-trend_fdr <- ggplot() +
-  geom_sf(data = land, fill = "gray", color = "grey30", linewidth = 0.25) +
-  geom_tile(data = lg, aes(x, y, fill = trend_pt, alpha = sig_fdr),
-            width = 50, height = 50) +
-  geom_sf(data = north, fill = NA, color = "grey30", linewidth = 0.25) +
-  scale_alpha_manual(values = c("FALSE" = 0.15, "TRUE" = 1), guide = "none") +
-  scale_fill_distiller(palette = "RdBu", limits = c(-lim1, lim1),
-                       oob = scales::squish, direction = 1,
-                       name = "Trend\n(per decade)") +
-  coord_sf(crs = laea_na, xlim = range(lg$x), ylim = range(lg$y),
-           expand = FALSE) +
-  theme(axis.title = element_blank(), 
-        axis.text = element_blank(),
-        axis.ticks = element_blank(),        
-        panel.grid = element_blank(),
-        panel.background = element_rect(fill = "white"),
-        legend.position = "bottom")
-trend_fdr
+# Significance
+mean(lg$sig_cell)                    # land area with a clear sign (lfsr <= q)
+mean(lg$lfsr[lg$sig_cell])           # realized average lfsr of that area
+mean(lg$sig_simul)                   # simultaneous band (strictest)
+und$c95[1]                           # band multiplier (vs 1.96 pointwise)
+mean(fdr_flag(lg$lfsr, q))           # Bayesian FDR, for reference only
+sig_table(lg)
 
-# Assess "significance": Simultaneous 95% band (stricter; all cells jointly) --#
-# Max-standardized-deviation method: the band covers the whole trend surface
-# with ~95% probability.
-zmax <- apply(abs((tr - lg$trend_sim) / lg$sd), 2, max)
-c95  <- quantile(zmax, 0.95)
-c95 # compare with 1.96 for pointwise intervals
-lg$sig_simul <- (lg$trend_sim - c95 * lg$sd > 0) | (lg$trend_sim + c95 * lg$sd < 0)
-mean(lg$sig_simul)
-# No cells flagged! (Maybe not too surprising since trends are small)
+map_und     <- trend_map(lg, lg$trend_pt,
+                         title = paste("Underlying local trend,",
+                                       min(years), "-", max(years)))
+map_und_sig <- trend_map(lg, lg$trend_pt, sig = lg$sig_cell,
+                         title = paste("Underlying local trend,",
+                                       min(years), "-", max(years),
+                                       "(faded: sign uncertain)"))
+map_und
+map_und_sig
 
-# Comparing methods:
-  # They control different error rates, much like Benjamini–Hochberg versus 
-    # Bonferroni.
-  # Simultaneous band controls the chance of making any wrong call anywhere 
-    # on the map at about 5%. It’s very strict and flags fewer cells.
-  # FDR allows some wrong calls but limits them to about 5% of the flagged 
-    # area. It’s less strict and flags more cells.
+# Realized local trends by period ---------------------------------------------#
 
-# Hemisphere-wide annual values and trend -------------------------------------#
+if (has_real) {
+  real <- lapply(names(periods), function(p) {
+    s <- summarize_trend_draws(tr_real[[p]], q)
+    bind_cols(lg[, c("x", "y")], s)
+  })
+  names(real) <- names(periods)
 
-# Notes on trends:
-# The realized trend describes the land-averaged leaf index over study period, 
-# including that period’s anomalies. The underlying trend is the 
-# model’s underlying trend after the anomalies are treated as noise. For a 
-# summary statement like “did leaf-out get earlier across North America from 
-# 1991 to 2024?”, the realized version is probably a better choice.
+  for (p in names(periods)) {
+    cat("\n== Realized local trend,", period_lab[[p]], "==\n")
+    s <- real[[p]]
+    cat("Area with clear sign (lfsr <= q):", round(mean(s$sig_cell), 3), "\n")
+    cat("Average lfsr of that area:", round(mean(s$lfsr[s$sig_cell]), 4), "\n")
+    cat("Simultaneous band:", round(mean(s$sig_simul), 3), "\n")
+    print(sig_table(s))
+  }
 
-# Model-estimated underlying trend
-summary(underlying_trend) # per draw, days/decade
-  # This is the model's underlying trend. It's calculated by summarizing 
-  # the simulated values across cells in each year. Simulated values are 
-  # the fixed trend effect + spatially varying yrc field (from tr object).
-  # They don't take the yearly anomaly fields into account
+  # Common color scale across periods so maps can be compared directly
+  lim_real <- max(sapply(real, function(s)
+    max(abs(quantile(s$est, c(0.02, 0.98))))))
 
-# Annual values (from ann_sum, which comes from ann_draws)
-ann_sum
-  # Land-averaged annual values, one per year. Each value in ann_draws is the 
-  # average over all land cells within a draw. This does take yearly anomaly
-  # fields into account.
+  maps_real <- lapply(names(periods), function(p) {
+    trend_map(real[[p]], real[[p]]$est, sig = real[[p]]$sig_cell,
+              lim = lim_real,
+              title = paste("Realized local trend,", period_lab[[p]],
+                            "(faded: sign uncertain)"))
+  })
+  names(maps_real) <- names(periods)
+  print(maps_real$full)     # print() needed: plots inside if {} don't auto-show
+  print(maps_real$recent)
 
-# Realized trend with proper uncertainty
-  # OLS slope through the annual means, within each draw
-# Mean, 95% confidence interval (computed from 1000 draws from the approximate
-# joint distribution of the fixed and random effects)
-c(est = mean(realized_trend), quantile(realized_trend, c(0.025, 0.975)))
-# Probability the realized trend is positive
-mean(realized_trend > 0)   
+  # How different is the recent period from the long-term trend?
+  diff_recent <- tr_real$recent - tr       # per draw, days/decade
+  lg$diff_recent     <- rowMeans(diff_recent)
+  lg$diff_recent_sig <- pmin(rowMeans(diff_recent > 0),
+                             rowMeans(diff_recent < 0)) <= q
+  map_diff <- trend_map(lg, lg$diff_recent, sig = lg$diff_recent_sig,
+                        title = paste("Realized", period_lab[["recent"]],
+                                      "minus underlying trend"))
+  print(map_diff)
+}
 
-# Realized trend per year
-slope_yr <- mean(realized_trend) / 10 # days per year
+# Hemisphere-wide annual values and realized trends ---------------------------#
+# ann_draws: years x nsim, each value the land-average of one draw's annual
+# surface (includes the yearly anomaly fields).
+# Realized trend: OLS slope through the land-averaged annual values within
+# each draw, over each period. The underlying trend ignores the anomalies.
 
-# Plot without a confidence interval around the estimated trend
-hemiplot <- ggplot(ann_sum, aes(x = year, y = est)) +
-  geom_linerange(aes(ymin = lwr, ymax = upr), color = "gray") +
-  geom_point() +
-  geom_abline(intercept = mean(ann_sum$est) - slope_yr * mean(ann_sum$year),
-              slope = slope_yr, 
-              linetype = 2) +
-  labs(y = "Mean leaf index (DOY)", x = NULL)
+summary(underlying_trend)               # per draw, days/decade
+
+realized_slope <- function(per) {
+  i <- match(per, years)
+  x <- (years[i] - mean(years[i])) / 10
+  w <- (x - mean(x)) / sum((x - mean(x))^2)
+  as.vector(crossprod(w, ann_draws[i, , drop = FALSE]))
+}
+real_hemi <- lapply(periods, realized_slope)
+
+hemi_tab <- do.call(rbind, lapply(names(periods), function(p) {
+  r <- real_hemi[[p]]
+  data.frame(period = period_lab[[p]],
+             est = mean(r),
+             lwr = unname(quantile(r, q / 2)),
+             upr = unname(quantile(r, 1 - q / 2)),
+             p_later = mean(r > 0))      # probability the trend is positive
+}))
+hemi_tab   # days/decade
+
+# Fitted line + band for each period, from the same draws
+line_df <- do.call(rbind, lapply(names(periods), function(p) {
+  i  <- match(periods[[p]], years)
+  x  <- (years[i] - mean(years[i])) / 10
+  ld <- sweep(outer(x, real_hemi[[p]]), 2,
+              colMeans(ann_draws[i, , drop = FALSE]), "+")
+  data.frame(period = period_lab[[p]], year = years[i],
+             fit = rowMeans(ld),
+             fit_lwr = apply(ld, 1, quantile, q / 2),
+             fit_upr = apply(ld, 1, quantile, 1 - q / 2))
+}))
+
+trend_labels <- with(hemi_tab, setNames(
+  sprintf("%s: %.2f days/decade (%.2f to %.2f)", period, est, lwr, upr),
+  period))
+
+hemiplot <- ggplot() +
+  geom_ribbon(data = line_df,
+              aes(x = year, ymin = fit_lwr, ymax = fit_upr, fill = period),
+              alpha = 0.2) +
+  geom_line(data = line_df, aes(x = year, y = fit, color = period),
+            linetype = 2) +
+  geom_linerange(data = ann_sum, aes(x = year, ymin = lwr, ymax = upr),
+                 color = "gray") +
+  geom_point(data = ann_sum, aes(x = year, y = est)) +
+  scale_color_brewer(palette = "Dark2", labels = trend_labels,
+                     name = "Realized trend") +
+  scale_fill_brewer(palette = "Dark2", labels = trend_labels,
+                    name = "Realized trend") +
+  labs(y = paste("Mean", index_name, "index (DOY)"), x = NULL,
+       title = paste("Land-averaged", index_name, "index,", region)) +
+  theme(legend.position = "bottom", legend.direction = "vertical")
 hemiplot
 
-# Calculate uncertainty around the trend
-yr <- ann_sum$year
-xcc <- (yr - mean(yr)) / 10   # Decades from the midpoint year
+# Save figures ----------------------------------------------------------------#
 
-# years x nsim: each column is one draw's fitted line
-line_draws <- sweep(outer(xcc, realized_trend), 2, colMeans(ann_draws), "+")
-
-ann_sum$fit     <- rowMeans(line_draws)
-ann_sum$fit_lwr <- apply(line_draws, 1, quantile, 0.025)
-ann_sum$fit_upr <- apply(line_draws, 1, quantile, 0.975)
-
-hemiplot_ci <- ggplot(ann_sum, aes(x = year)) +
-  geom_ribbon(aes(ymin = fit_lwr, ymax = fit_upr), fill = "steelblue", alpha = 0.2) +
-  geom_line(aes(y = fit), linetype = 2) +
-  geom_linerange(aes(ymin = lwr, ymax = upr), color = "gray") +
-  geom_point(aes(y = est)) +
-  labs(y = "Mean leaf index (DOY)", x = NULL)
-hemiplot_ci
-
-# Save output to file:
-ggsave(paste0(folder, "trendmap-all.png"), trendmap, 
+ggsave(paste0(folder, "trendmap-underlying.png"), map_und,
        width = 6.5, height = 6.5, units = "in", dpi = 600)
-ggsave(paste0(folder, "trendmap-fdr.png"), trend_fdr, 
+ggsave(paste0(folder, "trendmap-underlying-sig.png"), map_und_sig,
        width = 6.5, height = 6.5, units = "in", dpi = 600)
-ggsave(paste0(folder, "hemi-trends.png"), hemiplot_ci, 
-       width = 6.5, height = 4, units = "in", dpi = 600)
-
-
-# For reference, how the sweep function works ---------------------------------#
-# m <- matrix(c(-1, 0, 1,     # draw 1: slope 1
-#               -2, 0, 2),    # draw 2: slope 2
-#             nrow = 3)
-# sweep(m, 2, c(100, 120), "+")
+if (has_real) {
+  for (p in names(periods)) {
+    ggsave(paste0(folder, "trendmap-realized-", period_lab[[p]], ".png"),
+           maps_real[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
+  }
+  ggsave(paste0(folder, "trendmap-realized-recent-minus-underlying.png"),
+         map_diff, width = 6.5, height = 6.5, units = "in", dpi = 600)
+}
+ggsave(paste0(folder, "hemi-trends.png"), hemiplot,
+       width = 6.5, height = 5, units = "in", dpi = 600)
