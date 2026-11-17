@@ -3,7 +3,9 @@
 # Reads the results list saved by si-3-run.R (on the HPC) and
 # makes maps of local trends and plots of hemisphere-wide annual values and
 # realized trends, for the full period and for any sub-periods saved in
-# `periods` (default: full = 1951-2024, recent = 1991-2024).
+# `periods` (here: full = 1951-2024, recent = 1991-2024, recent30 = 1991-2020).
+# Each sub-period gets its own realized-minus-underlying map and its own
+# hemisphere plot (shown alongside the full-period trend).
 #
 # Two kinds of trend appear below:
 #   UNDERLYING local trend (tr, lg$trend_pt): the model's straight-line trend
@@ -30,25 +32,21 @@ library(ggplot2)
 
 index_name <- "bloom"   # leaf, bloom, frz or damage
 run_name   <- paste0("si-", index_name, "-1951-2024-northhemis")
-folder     <- paste0(index_name, "-1951-2024-northhemis/")   # local folder
 region     <- "Northern Hemisphere"
 q          <- 0.05   # error rate for significance (sign) calls
 
 # Read in results -------------------------------------------------------------#
 
 # The fit itself is not needed here (all products are in the results file)
-results <- readRDS(paste0(folder, run_name, "-results.rds"))
+results <- readRDS(paste0("model-fits-results/", run_name, "-results.rds"))
 list2env(results, envir = .GlobalEnv)
 rm(results)
 
-has_real <- exists("tr_real")   # FALSE for results from the older run script
-if (!has_real) {
-  message("Results have no realized local trends (tr_real); re-run the ",
-          "updated run script on the HPC to get the period maps. ",
-          "Hemisphere-wide period trends are computed from ann_draws below.")
-  periods <- list(full = years, recent = 1991:2024)
-}
 period_lab <- sapply(periods, function(p) paste0(min(p), "-", max(p)))
+
+# The full period is the one named "full"; every other period is a sub-period
+stopifnot("full" %in% names(periods))
+subs <- setdiff(names(periods), "full")
 
 # Run information -------------------------------------------------------------#
 
@@ -183,45 +181,70 @@ map_und_sig
 
 # Realized local trends by period ---------------------------------------------#
 
-if (has_real) {
-  real <- lapply(names(periods), function(p) {
-    s <- summarize_trend_draws(tr_real[[p]], q)
-    bind_cols(lg[, c("x", "y")], s)
-  })
-  names(real) <- names(periods)
+real <- lapply(names(periods), function(p) {
+  s <- summarize_trend_draws(tr_real[[p]], q)
+  bind_cols(lg[, c("x", "y")], s)
+})
+names(real) <- names(periods)
 
-  for (p in names(periods)) {
-    cat("\n== Realized local trend,", period_lab[[p]], "==\n")
-    s <- real[[p]]
-    cat("Area with clear sign (lfsr <= q):", round(mean(s$sig_cell), 3), "\n")
-    cat("Average lfsr of that area:", round(mean(s$lfsr[s$sig_cell]), 4), "\n")
-    cat("Simultaneous band:", round(mean(s$sig_simul), 3), "\n")
-    print(sig_table(s))
-  }
+for (p in names(periods)) {
+  cat("\n== Realized local trend,", period_lab[[p]], "==\n")
+  s <- real[[p]]
+  cat("Area with clear sign (lfsr <= q):", round(mean(s$sig_cell), 3), "\n")
+  cat("Average lfsr of that area:", round(mean(s$lfsr[s$sig_cell]), 4), "\n")
+  cat("Simultaneous band:", round(mean(s$sig_simul), 3), "\n")
+  print(sig_table(s))
+}
 
-  # Common color scale across periods so maps can be compared directly
-  lim_real <- max(sapply(real, function(s)
-    max(abs(quantile(s$est, c(0.02, 0.98))))))
+# Common color scale across periods so maps can be compared directly
+lim_real <- max(sapply(real, function(s)
+  max(abs(quantile(s$est, c(0.02, 0.98))))))
 
-  maps_real <- lapply(names(periods), function(p) {
-    trend_map(real[[p]], real[[p]]$est, sig = real[[p]]$sig_cell,
-              lim = lim_real,
-              title = paste("Realized local trend,", period_lab[[p]],
-                            "(faded: sign uncertain)"))
-  })
-  names(maps_real) <- names(periods)
-  print(maps_real$full)     # print() needed: plots inside if {} don't auto-show
-  print(maps_real$recent)
+maps_real <- lapply(names(periods), function(p) {
+  trend_map(real[[p]], real[[p]]$est, sig = real[[p]]$sig_cell,
+            lim = lim_real,
+            title = paste("Realized local trend,", period_lab[[p]],
+                          "(faded: sign uncertain)"))
+})
+names(maps_real) <- names(periods)
+for (p in names(periods)) print(maps_real[[p]])   # print() needed inside a loop
 
-  # How different is the recent period from the long-term trend?
-  diff_recent <- tr_real$recent - tr       # per draw, days/decade
-  lg$diff_recent     <- rowMeans(diff_recent)
-  lg$diff_recent_sig <- pmin(rowMeans(diff_recent > 0),
-                             rowMeans(diff_recent < 0)) <= q
-  map_diff <- trend_map(lg, lg$diff_recent, sig = lg$diff_recent_sig,
-                        title = paste("Realized", period_lab[["recent"]],
-                                      "minus underlying trend"))
-  print(map_diff)
+# Full period without fading (same color scale as the faded maps)
+map_real_full_all <- trend_map(real$full, real$full$est, lim = lim_real,
+                               title = paste("Realized local trend,",
+                                             period_lab[["full"]]))
+print(map_real_full_all)
+
+# How different is each sub-period from the long-term (underlying) trend?
+# Per draw: realized trend over the sub-period minus b + zeta(s). Cells are
+# faded where the sign of the difference is uncertain (lfsr > q).
+diff_sum <- lapply(subs, function(p) {
+  dd <- tr_real[[p]] - tr                 # per draw, days/decade
+  data.frame(x = lg$x, y = lg$y,
+             est = rowMeans(dd),
+             sig = pmin(rowMeans(dd > 0), rowMeans(dd < 0)) <= q)
+})
+names(diff_sum) <- subs
+
+# Common color scale across sub-periods so the maps can be compared
+lim_diff <- max(sapply(diff_sum, function(s)
+  max(abs(quantile(s$est, c(0.02, 0.98))))))
+
+maps_diff <- lapply(subs, function(p) {
+  trend_map(diff_sum[[p]], diff_sum[[p]]$est, sig = diff_sum[[p]]$sig,
+            lim = lim_diff,
+            title = paste("Realized", period_lab[[p]],
+                          "minus underlying trend"))
+})
+names(maps_diff) <- subs
+for (p in subs) print(maps_diff[[p]])
+
+for (p in subs) {
+  cat("\n== Realized", period_lab[[p]], "minus underlying ==\n")
+  cat("Area where the difference has a clear sign:",
+      round(mean(diff_sum[[p]]$sig), 3), "\n")
+  cat("  ...and the recent trend is earlier than the underlying trend:",
+      round(mean(diff_sum[[p]]$sig & diff_sum[[p]]$est < 0), 3), "\n")
 }
 
 # Hemisphere-wide annual values and realized trends ---------------------------#
@@ -266,37 +289,59 @@ trend_labels <- with(hemi_tab, setNames(
   sprintf("%s: %.2f days/decade (%.2f to %.2f)", period, est, lwr, upr),
   period))
 
-hemiplot <- ggplot() +
-  geom_ribbon(data = line_df,
-              aes(x = year, ymin = fit_lwr, ymax = fit_upr, fill = period),
-              alpha = 0.2) +
-  geom_line(data = line_df, aes(x = year, y = fit, color = period),
-            linetype = 2) +
-  geom_linerange(data = ann_sum, aes(x = year, ymin = lwr, ymax = upr),
-                 color = "gray") +
-  geom_point(data = ann_sum, aes(x = year, y = est)) +
-  scale_color_brewer(palette = "Dark2", labels = trend_labels,
-                     name = "Realized trend") +
-  scale_fill_brewer(palette = "Dark2", labels = trend_labels,
-                    name = "Realized trend") +
-  labs(y = paste("Mean", index_name, "index (DOY)"), x = NULL,
-       title = paste("Land-averaged", index_name, "index,", region)) +
-  theme(legend.position = "bottom", legend.direction = "vertical")
-hemiplot
+# One plot per sub-period: annual values, full-period trend, sub-period trend.
+# Colors are fixed (full = first color, sub-period = second) so every plot
+# reads the same way.
+hemi_colors <- RColorBrewer::brewer.pal(3, "Dark2")[1:2]
+
+hemi_plot <- function(sub) {
+  labs_p <- period_lab[c("full", sub)]
+  ld     <- line_df[line_df$period %in% labs_p, ]
+  ld$period <- factor(ld$period, levels = labs_p)
+  cols   <- setNames(hemi_colors, labs_p)
+  ggplot() +
+    geom_ribbon(data = ld,
+                aes(x = year, ymin = fit_lwr, ymax = fit_upr, fill = period),
+                alpha = 0.2) +
+    geom_line(data = ld, aes(x = year, y = fit, color = period),
+              linetype = 2) +
+    geom_linerange(data = ann_sum, aes(x = year, ymin = lwr, ymax = upr),
+                   color = "gray") +
+    geom_point(data = ann_sum, aes(x = year, y = est), size = 0.8) +
+    scale_color_manual(values = cols, labels = trend_labels[labs_p],
+                       name = "Realized trend") +
+    scale_fill_manual(values = cols, labels = trend_labels[labs_p],
+                      name = "Realized trend") +
+    labs(y = paste("Mean", index_name, "index (DOY)"), x = NULL,
+         title = paste("Land-averaged", index_name, "index,", region)) +
+    theme_bw() +
+    theme(legend.position = "bottom", legend.direction = "vertical")
+}
+
+hemiplots <- lapply(subs, hemi_plot)
+names(hemiplots) <- subs
+for (p in subs) print(hemiplots[[p]])
 
 # Save figures ----------------------------------------------------------------#
 
-ggsave(paste0(folder, "trendmap-underlying.png"), map_und,
+ggsave(paste0("output/", index_name, "-trendmap-underlying.png"), map_und,
        width = 6.5, height = 6.5, units = "in", dpi = 600)
-ggsave(paste0(folder, "trendmap-underlying-sig.png"), map_und_sig,
+ggsave(paste0("output/", index_name, "-trendmap-underlying-sig.png"), map_und_sig,
        width = 6.5, height = 6.5, units = "in", dpi = 600)
-if (has_real) {
-  for (p in names(periods)) {
-    ggsave(paste0(folder, "trendmap-realized-", period_lab[[p]], ".png"),
-           maps_real[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
-  }
-  ggsave(paste0(folder, "trendmap-realized-recent-minus-underlying.png"),
-         map_diff, width = 6.5, height = 6.5, units = "in", dpi = 600)
+for (p in names(periods)) {
+  ggsave(paste0("output/", index_name, "-trendmap-realized-", period_lab[[p]], ".png"),
+         maps_real[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
 }
-ggsave(paste0(folder, "hemi-trends.png"), hemiplot,
-       width = 6.5, height = 5, units = "in", dpi = 600)
+ggsave(paste0("output/", index_name, "-trendmap-realized-",
+              period_lab[["full"]], "-all.png"),
+       map_real_full_all, width = 6.5, height = 6.5, units = "in", dpi = 600)
+for (p in subs) {
+  ggsave(paste0("output/", index_name, "-trendmap-realized-",
+                period_lab[[p]], "-minus-underlying.png"),
+         maps_diff[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
+}
+for (p in subs) {
+  ggsave(paste0("output/", index_name, "-hemi-trends-",
+                period_lab[["full"]], "-vs-", period_lab[[p]], ".png"),
+         hemiplots[[p]], width = 6.5, height = 5, units = "in", dpi = 600)
+}
