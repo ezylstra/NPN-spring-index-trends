@@ -35,6 +35,18 @@ run_name   <- paste0("si-", index_name, "-1951-2024-northhemis")
 region     <- "Northern Hemisphere"
 q          <- 0.05   # error rate for significance (sign) calls
 
+# Color scales for maps of different periods (realized trends; realized
+# minus underlying). TRUE: one scale shared by all periods, so colors can be
+# compared between maps. FALSE: each period gets a scale fitted to its own
+# values (more detail, but the same color means different trends on
+# different maps). Maps of the same period (all cells vs. faded) always share
+# a scale.
+shared_color_ramp <- FALSE
+
+# Save the realized-minus-underlying maps to file? (They are always made and
+# shown on screen; this only controls the PNG files.)
+save_trend_diff_maps <- FALSE
+
 # Read in results -------------------------------------------------------------#
 
 # The fit itself is not needed here (all products are in the results file)
@@ -127,10 +139,21 @@ north <- st_transform(north, laea_km)
 land  <- st_union(st_make_valid(north))
 sf_use_s2(TRUE)
 
+# Color-scale limit for a set of values: largest absolute 2nd/98th percentile
+scale_lim <- function(v) max(abs(quantile(v, c(0.02, 0.98))))
+
+# Limits for a named list of value vectors (one per period): shared or own,
+# depending on shared_color_ramp. Returns a named vector of limits.
+period_lims <- function(vals) {
+  lims <- sapply(vals, scale_lim)
+  if (shared_color_ramp) lims[] <- max(lims)
+  lims
+}
+
 # Map of a trend surface; optional `sig` fades non-significant cells
 trend_map <- function(cells, fill, sig = NULL, lim = NULL, title = NULL) {
   cells$fill <- fill
-  if (is.null(lim)) lim <- max(abs(quantile(fill, c(0.02, 0.98))))
+  if (is.null(lim)) lim <- scale_lim(fill)
   cells$sig <- if (is.null(sig)) TRUE else sig
   ggplot() +
     geom_sf(data = land, fill = "gray", color = "grey30", linewidth = 0.25) +
@@ -196,24 +219,26 @@ for (p in names(periods)) {
   print(sig_table(s))
 }
 
-# Common color scale across periods so maps can be compared directly
-lim_real <- max(sapply(real, function(s)
-  max(abs(quantile(s$est, c(0.02, 0.98))))))
+# Color scale per period: shared across periods or fitted to each (see
+# shared_color_ramp in Settings)
+lim_real <- period_lims(lapply(real, function(s) s$est))
 
 maps_real <- lapply(names(periods), function(p) {
   trend_map(real[[p]], real[[p]]$est, sig = real[[p]]$sig_cell,
-            lim = lim_real,
+            lim = lim_real[[p]],
             title = paste("Realized local trend,", period_lab[[p]],
                           "(faded: sign uncertain)"))
 })
 names(maps_real) <- names(periods)
 for (p in names(periods)) print(maps_real[[p]])   # print() needed inside a loop
 
-# Full period without fading (same color scale as the faded maps)
-map_real_full_all <- trend_map(real$full, real$full$est, lim = lim_real,
-                               title = paste("Realized local trend,",
-                                             period_lab[["full"]]))
-print(map_real_full_all)
+# Same maps without fading (each uses its period's faded-map color scale)
+maps_real_all <- lapply(names(periods), function(p) {
+  trend_map(real[[p]], real[[p]]$est, lim = lim_real[[p]],
+            title = paste("Realized local trend,", period_lab[[p]]))
+})
+names(maps_real_all) <- names(periods)
+for (p in names(periods)) print(maps_real_all[[p]])
 
 # How different is each sub-period from the long-term (underlying) trend?
 # Per draw: realized trend over the sub-period minus b + zeta(s). Cells are
@@ -226,13 +251,12 @@ diff_sum <- lapply(subs, function(p) {
 })
 names(diff_sum) <- subs
 
-# Common color scale across sub-periods so the maps can be compared
-lim_diff <- max(sapply(diff_sum, function(s)
-  max(abs(quantile(s$est, c(0.02, 0.98))))))
+# Color scale per sub-period: shared or fitted to each (shared_color_ramp)
+lim_diff <- period_lims(lapply(diff_sum, function(s) s$est))
 
 maps_diff <- lapply(subs, function(p) {
   trend_map(diff_sum[[p]], diff_sum[[p]]$est, sig = diff_sum[[p]]$sig,
-            lim = lim_diff,
+            lim = lim_diff[[p]],
             title = paste("Realized", period_lab[[p]],
                           "minus underlying trend"))
 })
@@ -332,13 +356,17 @@ for (p in names(periods)) {
   ggsave(paste0("output/", index_name, "-trendmap-realized-", period_lab[[p]], ".png"),
          maps_real[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
 }
-ggsave(paste0("output/", index_name, "-trendmap-realized-",
-              period_lab[["full"]], "-all.png"),
-       map_real_full_all, width = 6.5, height = 6.5, units = "in", dpi = 600)
-for (p in subs) {
+for (p in names(periods)) {
   ggsave(paste0("output/", index_name, "-trendmap-realized-",
-                period_lab[[p]], "-minus-underlying.png"),
-         maps_diff[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
+                period_lab[[p]], "-all.png"),
+         maps_real_all[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
+}
+if (save_trend_diff_maps) {
+  for (p in subs) {
+    ggsave(paste0("output/", index_name, "-trendmap-realized-",
+                  period_lab[[p]], "-minus-underlying.png"),
+           maps_diff[[p]], width = 6.5, height = 6.5, units = "in", dpi = 600)
+  }
 }
 for (p in subs) {
   ggsave(paste0("output/", index_name, "-hemi-trends-",
