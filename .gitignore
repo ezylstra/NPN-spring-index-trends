@@ -3,8 +3,5 @@
 .RData
 .Ruserdata
 
-/leaf-1991-2024-northamerica/**
-!/leaf-1991-2024-northamerica/*.R
-
 /model-fits-results/**
 !/model-fits-results/.gitkeep
