@@ -1,0 +1,63 @@
+Run: si-leaf-1951-2024-northhemis-noSVC 
+ALL CHECKS PASS: TRUE 
+
+Check 1 (structure): TRUE 
+List of 12
+ $ joint_precision_present: logi TRUE
+ $ Q_dim_matches_par      : logi TRUE
+ $ n_b_j                  : int 2
+ $ b_j_names_fixef        : chr [1:2] "(Intercept)" "yrc"
+ $ n_omega_s              : int 1853
+ $ n_zeta_s               : int 0
+ $ n_epsilon_st           : int 137122
+ $ expected_epsilon_st    : int 137122
+ $ model_years            : num [1:74] 1951 1952 1953 1954 1955 ...
+ $ years_match            : logi TRUE
+ $ A_dim                  : int [1:2] 19420 1853
+ $ pass                   : logi TRUE
+
+Check 2 (point estimates, max abs diff): TRUE 
+  year          est omega_s epsilon_st
+1 1951 2.842171e-14       0          0
+2 1987 2.842171e-14       0          0
+3 2024 2.842171e-14       0          0
+
+Check 3 (underlying trend = fixed slope, max abs diff): TRUE 
+[1] 1.754152e-14
+
+Check 4 (uncertainty vs predict(nsim)): TRUE 
+List of 4
+ $ sd_ratio_median  : num 0.997
+ $ sd_ratio_range   : num [1:2] 0.858 1.234
+ $ sd_correlation   : num 0.996
+ $ mean_diff_over_sd: 'summaryDefault' Named num [1:6] 7.64e-06 1.98e-02 4.26e-02 4.97e-02 7.29e-02 ...
+  ..- attr(*, "names")= chr [1:6] "Min." "1st Qu." "Median" "Mean" ...
+
+Sanity:
+$hessian_ok
+[1] TRUE
+
+$eigen_values_ok
+[1] TRUE
+
+$nlminb_ok
+[1] TRUE
+
+$range_ok
+[1] TRUE
+
+$gradients_ok
+[1] TRUE
+
+$se_magnitude_ok
+[1] TRUE
+
+$se_na_ok
+[1] TRUE
+
+$sigmas_ok
+[1] TRUE
+
+$all_ok
+[1] TRUE
+
