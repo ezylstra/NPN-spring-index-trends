@@ -1,16 +1,16 @@
-# SI-x indices, Northern Hemisphere 1951-2024: VISUALIZE RESULTS
+# SI-x indices, Northern Hemisphere 1955-2024: VISUALIZE RESULTS
 #
 # Reads the results list saved by si-3-run.R (on the HPC) and
 # makes maps of local trends and plots of hemisphere-wide annual values and
 # realized trends, for the full period and for any sub-periods saved in
-# `periods` (here: full = 1951-2024, recent = 1991-2024, recent30 = 1991-2020).
+# `periods` (here: full = 1955-2024, recent = 1991-2024, recent30 = 1991-2020).
 # Each sub-period gets its own realized-minus-underlying map and its own
 # hemisphere plot (shown alongside the full-period trend).
 #
 # Two kinds of trend appear below:
 #   UNDERLYING local trend (tr, lg$trend_pt): the model's straight-line trend
 #     at each location, b + zeta(s). The model fits ONE line per location for
-#     1951-2024, so this map is the same for any sub-period.
+#     1955-2024, so this map is the same for any sub-period.
 #   REALIZED trend (tr_real, realized_by_period): the OLS slope through the
 #     modeled annual values over a period, INCLUDING each year's anomaly
 #     field. This is the trend that actually happened over that period
@@ -30,8 +30,8 @@ library(ggplot2)
 
 # Settings --------------------------------------------------------------------#
 
-index_name <- "bloom"   # leaf, bloom, frz or damage
-run_name   <- paste0("si-", index_name, "-1951-2024-northhemis")
+index_name <- "leaf"   # leaf, bloom, frz or damage
+run_name   <- paste0("si-", index_name, "-1955-2024-northhemis")
 region     <- "Northern Hemisphere"
 q          <- 0.05   # error rate for significance (sign) calls
 
@@ -175,7 +175,7 @@ trend_map <- function(cells, fill, sig = NULL, lim = NULL, title = NULL) {
           legend.position = "bottom")
 }
 
-# Underlying local trends (whole model, 1951-2024) ----------------------------#
+# Underlying local trends (whole model, 1955-2024) ----------------------------#
 # Each draw is b + zeta(s); the intercept and yearly fields cancel in a
 # per-decade difference. Same map for any sub-period.
 
