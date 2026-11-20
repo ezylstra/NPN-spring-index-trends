@@ -1,0 +1,63 @@
+Run: si-damage-1955-2024-northhemis 
+ALL CHECKS PASS: TRUE 
+
+Check 1 (structure): TRUE 
+List of 12
+ $ joint_precision_present: logi TRUE
+ $ Q_dim_matches_par      : logi TRUE
+ $ n_b_j                  : int 2
+ $ b_j_names_fixef        : chr [1:2] "(Intercept)" "yrc"
+ $ n_omega_s              : int 1762
+ $ n_zeta_s               : int 1762
+ $ n_epsilon_st           : int 123340
+ $ expected_epsilon_st    : int 123340
+ $ model_years            : num [1:70] 1955 1956 1957 1958 1959 ...
+ $ years_match            : logi TRUE
+ $ A_dim                  : int [1:2] 19333 1762
+ $ pass                   : logi TRUE
+
+Check 2 (point estimates, max abs diff): TRUE 
+  year          est omega_s zeta_s_yrc epsilon_st
+1 1955 1.421085e-14       0  13.638957          0
+2 1989 1.421085e-14       0   3.580143          0
+3 2024 7.105427e-15       0   6.774519          0
+
+Check 3 (local trend, max abs diff): TRUE 
+[1] 0
+
+Check 4 (uncertainty vs predict(nsim)): TRUE 
+List of 4
+ $ sd_ratio_median  : num 1
+ $ sd_ratio_range   : num [1:2] 0.832 1.198
+ $ sd_correlation   : num 0.991
+ $ mean_diff_over_sd: 'summaryDefault' Named num [1:6] 5.61e-06 2.05e-02 4.39e-02 5.16e-02 7.43e-02 ...
+  ..- attr(*, "names")= chr [1:6] "Min." "1st Qu." "Median" "Mean" ...
+
+Sanity:
+$hessian_ok
+[1] TRUE
+
+$eigen_values_ok
+[1] TRUE
+
+$nlminb_ok
+[1] TRUE
+
+$range_ok
+[1] TRUE
+
+$gradients_ok
+[1] TRUE
+
+$se_magnitude_ok
+[1] TRUE
+
+$se_na_ok
+[1] TRUE
+
+$sigmas_ok
+[1] TRUE
+
+$all_ok
+[1] TRUE
+
