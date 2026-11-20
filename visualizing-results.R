@@ -30,7 +30,7 @@ library(ggplot2)
 
 # Settings --------------------------------------------------------------------#
 
-index_name <- "damage"   # leaf, bloom, frz or damage
+index_name <- "leaf"   # leaf, bloom, frz or damage
 run_name   <- paste0("si-", index_name, "-1955-2024-northhemis")
 region     <- "Northern Hemisphere"
 q          <- 0.05   # error rate for significance (sign) calls
@@ -79,6 +79,16 @@ all(unlist(fit_sanity))   # TRUE if every check passed
 
 fit_fixed
 fit_ranpar
+
+# Combine all estimates
+fit_fixed_df <- fit_fixed %>%
+  mutate(type = "fixed", .before = term) %>%
+  mutate(group_name = NA, .after = type) %>%
+  data.frame()
+fit_ranpar_df <- fit_ranpar %>%
+  mutate(type = "random", .before = group_name) %>%
+  data.frame()
+fit_est <- rbind(fit_fixed_df, fit_ranpar_df)
 
 # Helpers ---------------------------------------------------------------------#
 
@@ -373,3 +383,10 @@ for (p in subs) {
                 period_lab[["full"]], "-vs-", period_lab[[p]], ".png"),
          hemiplots[[p]], width = 6.5, height = 5, units = "in", dpi = 600)
 }
+
+# Save estimates --------------------------------------------------------------#
+
+write.csv(fit_est,
+          file = paste0("output/", index_name, "-model-ests-",
+                        period_lab[[1]], ".csv"),
+          row.names = FALSE)
