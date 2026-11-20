@@ -30,7 +30,7 @@ library(ggplot2)
 
 # Settings --------------------------------------------------------------------#
 
-index_name <- "leaf"   # leaf, bloom, frz or damage
+index_name <- "damage"   # leaf, bloom, frz or damage
 run_name   <- paste0("si-", index_name, "-1955-2024-northhemis")
 region     <- "Northern Hemisphere"
 q          <- 0.05   # error rate for significance (sign) calls
